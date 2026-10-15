@@ -66,7 +66,7 @@ def main():
     initial_dof_pos = measured_dof_pos[0, :].unsqueeze(0).repeat(env.unwrapped.num_envs, 1)
 
     time_steps = time_data.shape[0]
-    sim_dt = env.unwrapped.sim.cfg.dt
+    step_dt = env.unwrapped.step_dt  # one data sample per env.step (sim.dt * decimation)
 
     opt = CMAESOptimizer(
         bounds=bounds_params,
@@ -99,7 +99,7 @@ def main():
             env.step(actions)
             counter += 1
             if counter % 400 == 0:
-                print(f"[INFO]: Step {counter * sim_dt:.1f} / {time_data[-1]:.1f} seconds ({counter / time_steps * 100:.1f} %)")
+                print(f"[INFO]: Step {counter * step_dt:.1f} / {time_data[-1]:.1f} seconds ({counter / time_steps * 100:.1f} %)")
             if counter >= time_steps:
                 print("[INFO]: Reached the end of the trajectory, exiting.")
                 counter = 0

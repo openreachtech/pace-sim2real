@@ -23,9 +23,10 @@ Backends:
 
 * ``--backend real``    ENCOS motors over CAN through tsubame_control's
   ``encos_lib`` (run on the robot with the ROS 2 workspace sourced).
-* ``--backend mujoco``  Anaguma's MJCF with the body welded in the air. The motor firmware's MIT-mode PD is emulated at the physics
-  rate with the target held for one sample period, so the same collection
-  loop and the same output file can be checked without hardware.
+* ``--backend mujoco``  Anaguma's MJCF with the body welded in the air. The
+  motor firmware's MIT-mode PD is emulated at the physics rate with the target
+  held for one sample period, so the same collection loop and the same output
+  file can be checked without hardware.
 
 Columns of ``dof_pos``/``des_dof_pos`` follow ``JOINT_ORDER`` (the physical /
 CAN order FL, FR, RL, RR x hip, thigh, calf). The fitting task's
@@ -124,7 +125,7 @@ def check_within_limits(targets: np.ndarray):
     for i, name in enumerate(JOINT_ORDER):
         if low[i] < limits[i, 0] or high[i] > limits[i, 1]:
             raise ValueError(f"Chirp for {name} spans [{low[i]:.3f}, {high[i]:.3f}] rad, outside the joint "
-                             f"limits [{limits[i, 0]:.3f}, {limits[i, 1]:.3f}]. Lower --amplitude-scale.")
+                             f"limits [{limits[i, 0]:.3f}, {limits[i, 1]:.3f}]. Lower --amplitude_scale.")
 
 
 def cosine_ramp(start: np.ndarray, goal: np.ndarray, num_steps: int) -> np.ndarray:
@@ -137,7 +138,6 @@ def cosine_ramp(start: np.ndarray, goal: np.ndarray, num_steps: int) -> np.ndarr
 @dataclass
 class Feedback:
     pos: np.ndarray
-    vel: np.ndarray
     temperature: np.ndarray
     error_code: np.ndarray
     ok: np.ndarray  # per motor: a reply arrived for this command
@@ -158,13 +158,13 @@ class RealBackend:
 
     realtime = True
 
-    def __init__(self, kp: float, kd: float, batch: bool):
+    def __init__(self, kp: float, kd: float):
         # Imported here so that the MuJoCo backend runs without the ROS 2 workspace.
         from tsubame_control.encos_lib.encos_lib import CanController, CanMotor
         from tsubame_control.tsubame_utils.parameters import anaguma_parameters as P
 
         assert list(P.JOINT_NAME) == JOINT_ORDER, "JOINT_ORDER drifted from tsubame_control's JOINT_NAME"
-        self.kp, self.kd, self.batch = kp, kd, batch
+        self.kp, self.kd = kp, kd
         configs = P.select_motor_configs("anaguma")
         self.controllers = {}
         self.motors = []
@@ -202,23 +202,14 @@ class RealBackend:
     def _exchange(self, target, kp, kd) -> Feedback:
         n = len(self.motors)
         ok = np.zeros(n, dtype=bool)
-        if self.batch:
-            # All 12 frames go out back to back, then the replies are collected: the
-            # encoder readings of one sample are taken within ~2 ms of each other.
-            for i, motor in enumerate(self.motors):
-                motor.send_rad_command_async(float(target[i]), 0.0, kp, kd, 0.0)
-            for i, motor in enumerate(self.motors):
-                ok[i] = motor.wait_for_feedback()
-        else:
-            # One motor at a time, as anaguma_main's CAN loop does.
-            for i, motor in enumerate(self.motors):
-                ok[i] = motor.send_rad_command(float(target[i]), 0.0, kp, kd, 0.0)
+        # One motor at a time, as anaguma_main's CAN loop does.
+        for i, motor in enumerate(self.motors):
+            ok[i] = motor.send_rad_command(float(target[i]), 0.0, kp, kd, 0.0)
         pos = np.array([m.current_position for m in self.motors])
         pos[~ok] = self.last_pos[~ok]
         self.last_pos = pos
         return Feedback(
             pos=pos,
-            vel=np.array([m.current_velocity for m in self.motors]),
             temperature=np.array([m.current_temp for m in self.motors]),
             error_code=np.array([m.current_error for m in self.motors]),
             ok=ok,
@@ -243,8 +234,7 @@ class RealBackend:
 class MujocoBackend:
     """Suspended Anaguma in MuJoCo with the motor's MIT-mode PD emulated per physics step."""
 
-    def __init__(self, mjcf: Path, kp: float, kd: float, dt: float, delay_steps: int, effort_scale: float,
-                 viewer: bool):
+    def __init__(self, mjcf: Path, kp: float, kd: float, dt: float, delay_steps: int, viewer: bool):
         import mujoco
 
         self.mujoco = mujoco
@@ -260,7 +250,6 @@ class MujocoBackend:
         self.dof_adr = np.array([self.model.jnt_dofadr[self.model.joint(n).id] for n in JOINT_ORDER])
         self.act_ids = np.array([self.model.actuator(n).id for n in JOINT_ORDER])
         self.curves = np.array([TORQUE_SPEED_CURVE[joint_type(n)] for n in JOINT_ORDER])
-        self.curves[:, 2] *= effort_scale  # peak torque Y1
         self.target_history = []
         # With the viewer, pace the samples in real time so the motion can be watched.
         self.realtime = viewer
@@ -302,7 +291,6 @@ class MujocoBackend:
         mujoco = self.mujoco
         fb = Feedback(
             pos=self.data.qpos[self.qpos_adr].copy(),
-            vel=self.data.qvel[self.dof_adr].copy(),
             temperature=np.full(len(JOINT_ORDER), 25.0),
             error_code=np.zeros(len(JOINT_ORDER), dtype=int),
             ok=np.ones(len(JOINT_ORDER), dtype=bool),
@@ -447,9 +435,6 @@ def main():
     parser.add_argument("--max_missed", type=int, default=5, help="Abort after this many missed replies in a row.")
     parser.add_argument("--plot", action="store_true", help="Save a target-vs-measured plot next to the data.")
     parser.add_argument("--yes", action="store_true", help="Skip the confirmation prompt (real backend).")
-    real = parser.add_argument_group("real backend")
-    real.add_argument("--can_batch", action="store_true",
-                      help="Send all 12 commands before collecting replies, instead of one motor at a time.")
     sim = parser.add_argument_group("mujoco backend")
     sim.add_argument("--mjcf", type=Path,
                      default=Path.home() / "tsubame/ros2_ws/src/tsubame_robot/tsubame_description/mjcf/anaguma.xml",
@@ -457,9 +442,6 @@ def main():
     sim.add_argument("--sim_delay_steps", type=int, default=0,
                      help="Physics steps the targets lag behind the command, to emulate actuator delay "
                           "(anaguma_deploy.yaml sim.actuator.delay_steps).")
-    sim.add_argument("--sim_effort_scale", type=float, default=1.0,
-                     help="Scales the peak of the torque-speed limit "
-                          "(anaguma_deploy.yaml sim.actuator.effort_scale).")
     sim.add_argument("--viewer", action="store_true", help="Show the MuJoCo passive viewer.")
     args = parser.parse_args()
 
@@ -477,10 +459,10 @@ def main():
         if not args.yes and input("Is the body suspended with all feet off the ground? [y/N] ").strip().lower() != "y":
             print("Aborted.")
             return
-        backend = RealBackend(args.kp, args.kd, args.can_batch)
+        backend = RealBackend(args.kp, args.kd)
     else:
         backend = MujocoBackend(args.mjcf.expanduser(), args.kp, args.kd, args.dt, args.sim_delay_steps,
-                                args.sim_effort_scale, args.viewer)
+                                args.viewer)
 
     out_dir = project_root() / "data" / robot_name
     out_dir.mkdir(parents=True, exist_ok=True)

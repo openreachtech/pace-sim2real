@@ -12,3 +12,21 @@ gym.register(
         "env_cfg_entry_point": f"{__name__}.pace.anymal_pace_env_cfg:AnymalDPaceEnvCfg"
     },
 )
+
+gym.register(
+    id="Isaac-Pace-Anaguma-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.pace.anaguma_pace_env_cfg:AnagumaPaceEnvCfg"
+    },
+)
+
+gym.register(
+    id="Isaac-Pace-Anaguma-Mujoco-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.pace.anaguma_pace_env_cfg:AnagumaMujocoPaceEnvCfg"
+    },
+)
